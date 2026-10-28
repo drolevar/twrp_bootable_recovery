@@ -468,6 +468,7 @@ LOCAL_POST_INSTALL_CMD += \
     endif
 LOCAL_REQUIRED_MODULES += init_second_stage.recovery \
     reboot.recovery \
+    task_profiles.json \
     plat_service_contexts \
     plat_hwservice_contexts \
     plat_hardware_contexts \
