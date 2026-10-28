@@ -1676,13 +1676,16 @@ bool TWPartition::Mount(bool Display_Error) {
 	if (Current_File_System == "exfat" && TWFunc::Path_Exists("/sys/module/texfat"))
 		mount_fs = "texfat";
 
+	// Read-only options such as norecovery/noload must not be dropped on retry.
+	const bool preserve_read_only_options = (flags & MS_RDONLY) && !Mount_Options.empty();
 	if (!exfat_mounted &&
 		mount(Actual_Block_Device.c_str(), Mount_Point.c_str(), mount_fs.c_str(), flags, Mount_Options.c_str()) != 0 &&
-		mount(Actual_Block_Device.c_str(), Mount_Point.c_str(), mount_fs.c_str(), flags, NULL) != 0) {
+		(preserve_read_only_options ||
+		 mount(Actual_Block_Device.c_str(), Mount_Point.c_str(), mount_fs.c_str(), flags, NULL) != 0)) {
 #ifdef TW_NO_EXFAT_FUSE
-		if (Current_File_System == "exfat") {
+		if (Current_File_System == "exfat" && !preserve_read_only_options) {
 			LOGINFO("Mounting exfat failed, trying vfat...\n");
-			if (mount(Actual_Block_Device.c_str(), Mount_Point.c_str(), "vfat", 0, NULL) != 0) {
+			if (mount(Actual_Block_Device.c_str(), Mount_Point.c_str(), "vfat", flags, NULL) != 0) {
 				if (Display_Error)
 					gui_msg(Msg(msg::kError, "fail_mount=Failed to mount '{1}' ({2})")(Mount_Point)(strerror(errno)));
 				else
