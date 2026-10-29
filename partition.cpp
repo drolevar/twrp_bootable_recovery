@@ -1226,7 +1226,14 @@ bool TWPartition::Make_Dir(string Path, bool Display_Error) {
 
 void TWPartition::Setup_File_System(bool Display_Error) {
 	Can_Be_Mounted = true;
-	Can_Be_Wiped = true;
+	if (Fstab_File_System == "erofs" || Fstab_File_System == "squashfs") {
+		Mount_Read_Only = true;
+		Can_Be_Wiped = false;
+		Wipe_Available_in_GUI = false;
+		Wipe_During_Factory_Reset = false;
+	} else {
+		Can_Be_Wiped = true;
+	}
 
 	// Make the mount point folder if it doesn't exist
 	Make_Dir(Mount_Point, Display_Error);
@@ -1767,6 +1774,14 @@ bool TWPartition::ReMount_RW(bool Display_Error) {
 	if (Is_File_System_Writable())
 		return true;
 
+	if (Mount_Read_Only ||
+		Current_File_System == "erofs" || Fstab_File_System == "erofs" ||
+		Current_File_System == "squashfs" || Fstab_File_System == "squashfs") {
+		LOGINFO("Refusing to remount read-only partition '%s' (%s) as read/write.\n",
+			Mount_Point.c_str(), Current_File_System.c_str());
+		return false;
+	}
+
 	bool ro = Mount_Read_Only;
 	int flags = Mount_Flags;
 
@@ -1792,7 +1807,8 @@ bool TWPartition::Wipe(string New_File_System) {
 	bool wiped = false, update_crypt = false, recreate_media = true;
 	int check;
 
-	if (!Can_Be_Wiped) {
+	if (!Can_Be_Wiped || Mount_Read_Only ||
+		New_File_System == "erofs" || New_File_System == "squashfs") {
 		gui_msg(Msg(msg::kError, "cannot_wipe=Partition {1} cannot be wiped.")(Display_Name));
 		return false;
 	}
@@ -2091,6 +2107,11 @@ bool TWPartition::Backup(PartitionSettings *part_settings, pid_t *tar_fork_pid) 
 }
 
 bool TWPartition::Restore(PartitionSettings *part_settings) {
+	if (Mount_Read_Only) {
+		gui_msg(Msg(msg::kError, "restore_read_only=Cannot restore {1} -- mounted read only.")(Backup_Display_Name));
+		return false;
+	}
+
 	TWFunc::GUI_Operation_Text(TW_RESTORE_TEXT, Display_Name, gui_parse_text("{@restoring_hdr}"));
 	LOGINFO("Restore filename is: %s/%s\n", part_settings->Backup_Folder.c_str(), Backup_FileName.c_str());
 
@@ -2233,6 +2254,9 @@ void TWPartition::Check_FS_Type() {
 
 	Current_File_System = type;
 	blkid_free_probe(pr);
+	if (Current_File_System == "erofs" || Current_File_System == "squashfs") {
+		Mount_Read_Only = true;
+	}
 	if (fs_flags.size() > 1) {
 		std::vector<partition_fs_flags_struct>::iterator iter;
 		std::vector<partition_fs_flags_struct>::iterator found = fs_flags.begin();
@@ -2808,15 +2832,26 @@ bool TWPartition::Raw_Read_Write(PartitionSettings *part_settings) {
 		}
 	}
 	else {
+		if (Mount_Read_Only) {
+			gui_msg(Msg(msg::kError, "restore_read_only=Cannot restore {1} -- mounted read only.")(Backup_Display_Name));
+			return false;
+		}
 #ifdef TW_ENABLE_BLKDISCARD
 		BlkDiscard();
 #endif
 		destfn = Actual_Block_Device;
 		if (part_settings->adbbackup) {
 			srcfn = TW_ADB_RESTORE;
+			Remain = part_settings->total_restore_size;
 		} else {
 			srcfn = part_settings->Backup_Folder + "/" + Backup_FileName;
 			Remain = TWFunc::Get_File_Size(srcfn);
+		}
+		if (Size > 0 && Remain > Size) {
+			LOGINFO("Size (%llu bytes) of image '%s' is larger than target device '%s' (%llu bytes)\n",
+				Remain, Backup_FileName.c_str(), Actual_Block_Device.c_str(), Size);
+			gui_err("img_size_err=Size of image is larger than target device");
+			return false;
 		}
 	}
 
@@ -3027,6 +3062,11 @@ bool TWPartition::Restore_Image(PartitionSettings *part_settings) {
 	string Full_FileName;
 	string Restore_File_System = Get_Restore_File_System(part_settings);
 
+	if (Mount_Read_Only) {
+		gui_msg(Msg(msg::kError, "restore_read_only=Cannot restore {1} -- mounted read only.")(Backup_Display_Name));
+		return false;
+	}
+
 	TWFunc::GUI_Operation_Text(TW_RESTORE_TEXT, Backup_Display_Name, gui_parse_text("{@restoring_hdr}"));
 	gui_msg(Msg("restoring=Restoring {1}...")(Backup_Display_Name));
 
@@ -3038,6 +3078,16 @@ bool TWPartition::Restore_Image(PartitionSettings *part_settings) {
 	if (Restore_File_System == "emmc") {
 		if (!part_settings->adbbackup)
 			part_settings->total_restore_size = (uint64_t)(TWFunc::Get_File_Size(Full_FileName));
+		if (!Find_Partition_Size()) {
+			LOGERR("Unable to find partition size for '%s'\n", Mount_Point.c_str());
+			return false;
+		}
+		if (part_settings->total_restore_size > Size) {
+			LOGINFO("Size (%llu bytes) of image '%s' is larger than target device '%s' (%llu bytes)\n",
+				part_settings->total_restore_size, Backup_FileName.c_str(), Actual_Block_Device.c_str(), Size);
+			gui_err("img_size_err=Size of image is larger than target device");
+			return false;
+		}
 		if (!Raw_Read_Write(part_settings))
 			return false;
 	} else if (Restore_File_System == "mtd" || Restore_File_System == "bml") {
@@ -3305,7 +3355,7 @@ bool TWPartition::Flash_Image(PartitionSettings *part_settings) {
 	if (Backup_Method == BM_FILES) {
 		LOGERR("Cannot flash images to file systems\n");
 		return false;
-	} else if (!Can_Flash_Img) {
+	} else if (!Can_Flash_Img || Mount_Read_Only) {
 		LOGERR("Cannot flash images to partitions %s\n", Display_Name.c_str());
 		return false;
 	} else {
@@ -3314,6 +3364,22 @@ bool TWPartition::Flash_Image(PartitionSettings *part_settings) {
 			return false;
 		}
 		unsigned long long image_size = TWFunc::Get_File_Size(full_filename);
+		const bool is_sparse = (Backup_Method == BM_DD && !part_settings->adbbackup && Is_Sparse_Image(full_filename));
+		if (is_sparse) {
+			sparse_header_t sparse_hdr;
+			memset(&sparse_hdr, 0, sizeof(sparse_hdr));
+			int fd = open(full_filename.c_str(), O_RDONLY);
+			if (fd >= 0) {
+				if (read(fd, &sparse_hdr, sizeof(sparse_hdr)) == sizeof(sparse_hdr) &&
+					sparse_hdr.magic == SPARSE_HEADER_MAGIC) {
+					unsigned long long expanded_size =
+						(unsigned long long)sparse_hdr.total_blks * (unsigned long long)sparse_hdr.blk_sz;
+					if (expanded_size > image_size)
+						image_size = expanded_size;
+				}
+				close(fd);
+			}
+		}
 		if (image_size > Size) {
 			LOGINFO("Size (%llu bytes) of image '%s' is larger than target device '%s' (%llu bytes)\n",
 				image_size, Backup_FileName.c_str(), Actual_Block_Device.c_str(), Size);
@@ -3322,7 +3388,7 @@ bool TWPartition::Flash_Image(PartitionSettings *part_settings) {
 		}
 		if (Backup_Method == BM_DD) {
 			if (!part_settings->adbbackup) {
-				if (Is_Sparse_Image(full_filename)) {
+				if (is_sparse) {
 					return Flash_Sparse_Image(full_filename);
 				}
 			}
@@ -3366,8 +3432,7 @@ bool TWPartition::Flash_Sparse_Image(const string& Filename) {
 
 	Command = "simg2img '" + Filename + "' '" + Actual_Block_Device + "'";
 	LOGINFO("Flash command: '%s'\n", Command.c_str());
-	TWFunc::Exec_Cmd(Command);
-	return true;
+	return (TWFunc::Exec_Cmd(Command) == 0);
 }
 
 bool TWPartition::Flash_Image_FI(const string& Filename, ProgressTracking *progress) {
@@ -3392,6 +3457,12 @@ bool TWPartition::Flash_Image_FI(const string& Filename, ProgressTracking *progr
 }
 
 void TWPartition::Change_Mount_Read_Only(bool new_value) {
+	if (!new_value &&
+		(Current_File_System == "erofs" || Fstab_File_System == "erofs" ||
+		 Current_File_System == "squashfs" || Fstab_File_System == "squashfs")) {
+		Mount_Read_Only = true;
+		return;
+	}
 	Mount_Read_Only = new_value;
 }
 

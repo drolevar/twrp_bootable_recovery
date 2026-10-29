@@ -272,6 +272,18 @@ bool twrpAdbBuFifo::Restore_ADB_Backup(void) {
 					pos = Restore_Name.find_last_of("/");
 					Backup_FileName = Restore_Name.substr(pos + 1, Restore_Name.size());
 					part_settings.Part = PartitionManager.Find_Partition_By_Path(path);
+					if (part_settings.Part == NULL) {
+						gui_msg(Msg(msg::kError, "restore_unable_locate=Unable to locate '{1}' partition for restoring.")(path));
+						ret = false;
+						break;
+					}
+					if (part_settings.Part->Is_Read_Only()) {
+						if (!twadbbu::Write_TWERROR())
+							LOGERR("Unable to write to TWRP ADB Backup.\n");
+						gui_msg(Msg(msg::kError, "restore_read_only=Cannot restore {1} -- mounted read only.")(part_settings.Part->Backup_Display_Name));
+						ret = false;
+						break;
+					}
 					part_settings.Backup_Folder = path;
 					part_settings.partition_count = partition_count;
 					part_settings.adbbackup = true;
@@ -304,18 +316,20 @@ bool twrpAdbBuFifo::Restore_ADB_Backup(void) {
 					Backup_FileName = Restore_Name.substr(pos + 1, Restore_Name.size());
 					pos = Restore_Name.find_last_of("/");
 					part_settings.Part = PartitionManager.Find_Partition_By_Path(path);
+					if (part_settings.Part == NULL) {
+						gui_msg(Msg(msg::kError, "restore_unable_locate=Unable to locate '{1}' partition for restoring.")(path));
+						ret = false;
+						break;
+					}
 					part_settings.Part->Set_Backup_FileName(Backup_FileName);
 					PartitionManager.Set_Restore_Files(path);
 
-					if (path.compare(PartitionManager.Get_Android_Root_Path()) == 0) {
-						if (part_settings.Part->Is_Read_Only()) {
-							if (!twadbbu::Write_TWERROR())
-								LOGERR("Unable to write to TWRP ADB Backup.\n");
-							gui_msg(Msg(msg::kError, "restore_read_only=Cannot restore {1} -- mounted read only.")(part_settings.Part->Backup_Display_Name));
-							ret = false;
-							break;
-
-						}
+					if (part_settings.Part->Is_Read_Only()) {
+						if (!twadbbu::Write_TWERROR())
+							LOGERR("Unable to write to TWRP ADB Backup.\n");
+						gui_msg(Msg(msg::kError, "restore_read_only=Cannot restore {1} -- mounted read only.")(part_settings.Part->Backup_Display_Name));
+						ret = false;
+						break;
 					}
 					part_settings.partition_count = partition_count;
 					part_settings.adbbackup = true;
