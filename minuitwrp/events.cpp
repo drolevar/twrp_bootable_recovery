@@ -501,11 +501,13 @@ static int vk_modify(struct ev *e, struct input_event *ev)
 
 	// Handle keyboard events, value of 1 indicates key down, 0 indicates key up
 	if (ev->type == EV_KEY) {
+#ifndef TW_USE_KEY_CODE_TOUCH_SYNC
 		if (ev->code == BTN_TOUCH || ev->code == BTN_TOOL_FINGER) {
 			if (ev->code == BTN_TOUCH && ev->value == 0)
 				touchReleaseOnNextSynReport = 1;
 			return 1;
 		}
+#endif
 		return 0;
 	}
 
@@ -700,6 +702,10 @@ static int vk_modify(struct ev *e, struct input_event *ev)
     {
         // Reset the value
         touchReleaseOnNextSynReport = 0;
+
+        // Ignore empty or spurious release sync when no touch or virtual key is active
+        if (downX == -1 && !discard)
+            return 1;
 
         // We are a finger-up state
         if (!discard)

@@ -118,6 +118,7 @@ public:
 		key_status = KS_NONE;
 		state = AS_NO_ACTION;
 		x = y = 0;
+		prevx = prevy = 0;
 
 #ifndef TW_NO_SCREEN_TIMEOUT
 		{
@@ -163,6 +164,7 @@ private:
 	key_status_enum key_status;
 	action_state_enum state;
 	int x, y; // x and y coordinates of last touch
+	int prevx, prevy; // x and y coordinates of last drag notice
 	struct timeval touchStart; // used to track time for long press / key repeat
 
 	void processHoldAndRepeat();
@@ -259,6 +261,8 @@ void InputHandler::processHoldAndRepeat()
 void InputHandler::doTouchStart()
 {
 	LOGEVENT("TOUCH_START: %d,%d\n", x, y);
+	prevx = x;
+	prevy = y;
 	if (PageManager::NotifyTouch(TOUCH_START, x, y) > 0)
 		state = AS_NO_ACTION;
 	else
@@ -297,6 +301,7 @@ void InputHandler::process_EV_ABS(input_event& ev)
 			if (state == AS_IN_ACTION_AREA)
 			{
 				LOGEVENT("TOUCH_DRAG: %d,%d\n", x, y);
+				handleDrag();
 			}
 		}
 	}
@@ -389,9 +394,7 @@ void InputHandler::process_EV_REL(input_event& ev)
 
 void InputHandler::handleDrag()
 {
-	// This allows us to only send one NotifyTouch event per render
-	// cycle to reduce overhead and perceived input latency.
-	static int prevx = 0, prevy = 0; // these track where the last drag notice was so that we don't send duplicate drag notices
+	// Deliver drag notifications whenever the touch position changes.
 	if (touch_status && (x != prevx || y != prevy)) {
 		prevx = x;
 		prevy = y;
