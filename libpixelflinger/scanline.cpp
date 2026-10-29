@@ -269,7 +269,7 @@ static shortcut_t shortcuts[] = {
         "rgba8888 fb, fixed color SRCA", scanline_col32cb32blend_srca, init_y_packed },
     { { { 0x03010105, 0x00000077, { 0x00000A02, 0x00000000 } },
         { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
-        "bgra8888 fb, rgbx8888 tx, SRC", scanline_t32cb32_rgbx_swizzle, init_y_noop },
+        "bgra8888 fb, rgbx8888 tx, SRC", scanline_t32cb32_rgbx_swizzle, init_y_packed },
     { { { 0x03010105, 0x00000077, { 0x00000A01, 0x00000000 } },
         { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
         "bgra8888 fb, rgba8888 tx, SRC", scanline_t32cb32_rgba_swizzle, init_y_noop },
@@ -278,7 +278,7 @@ static shortcut_t shortcuts[] = {
         "rgba8888 fb, bgra8888 tx, SRC", scanline_t32cb32_rgba_swizzle, init_y_noop },
     { { { 0x03010101, 0x00000077, { 0x00000A02, 0x00000000 } },
         { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
-        "rgba8888 fb, rgbx8888 tx, SRC", scanline_t32cb32_rgbx_same, init_y_noop },
+        "rgba8888 fb, rgbx8888 tx, SRC", scanline_t32cb32_rgbx_same, init_y_packed },
     { { { 0x03545405, 0x00000077, { 0x00000A01, 0x00000000 } },
         { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
         "bgra8888 fb, rgba8888 tx, SRCA", scanline_t32cb32blend_swizzle_srca, init_y_noop },
@@ -2298,6 +2298,39 @@ void scanline_t16cb16blend_clamp_mod(context_t* c)
     }
 }
 
+static inline uint32_t blend_8888_srca(uint32_t s, uint32_t d, uint32_t sA)
+{
+    const uint32_t sf = ((sA << 8) | sA) + (sA >> 7);
+    const uint32_t df = 0x10000 - sf;
+    const uint32_t r = (((s & 0xFF) * sf) >> 16) + (((d & 0xFF) * df + 0x8000) >> 16);
+    const uint32_t g = ((((s >> 8) & 0xFF) * sf) >> 16) + ((((d >> 8) & 0xFF) * df + 0x8000) >> 16);
+    const uint32_t b = ((((s >> 16) & 0xFF) * sf) >> 16) + ((((d >> 16) & 0xFF) * df + 0x8000) >> 16);
+    const uint32_t a = (((s >> 24) * sf) >> 16) + (((d >> 24) * df + 0x8000) >> 16);
+    return r | (g << 8) | (b << 16) | (a << 24);
+}
+
+static inline bool clip_1to1_span(
+        const surface_t* tex, int32_t& x, int32_t& u, int32_t v, size_t& ct)
+{
+    if (ggl_unlikely(v < 0 || v >= int32_t(tex->height) || ct == 0))
+        return false;
+    if (ggl_unlikely(u < 0)) {
+        const int32_t skip = -u;
+        if (size_t(skip) >= ct)
+            return false;
+        x += skip;
+        u = 0;
+        ct -= size_t(skip);
+    }
+    if (ggl_unlikely(u + int32_t(ct) > int32_t(tex->width))) {
+        const int32_t max_ct = int32_t(tex->width) - u;
+        if (max_ct <= 0)
+            return false;
+        ct = size_t(max_ct);
+    }
+    return true;
+}
+
 void scanline_col32cb32blend_srca(context_t* c)
 {
     uint32_t s = GGL_RGBA_TO_HOST(c->packed);
@@ -2313,17 +2346,12 @@ void scanline_col32cb32blend_srca(context_t* c)
     size_t ct = c->iterators.xr - x;
     int32_t y = c->iterators.y;
     surface_t* cb = &(c->state.buffers.color);
-    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) +
+            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y));
 
-    uint32_t f1 = sA + (sA >> 7);
-    uint32_t f2 = 0x100 - f1;
-    uint32_t s_rb = (s & 0x00FF00FF) * f1;
-    uint32_t s_ag = ((s >> 8) & 0x00FF00FF) * f1;
     while (ct--) {
         uint32_t d = GGL_RGBA_TO_HOST(*dst);
-        uint32_t rb = ((s_rb + (d & 0x00FF00FF) * f2) >> 8) & 0x00FF00FF;
-        uint32_t ag = (s_ag + ((d >> 8) & 0x00FF00FF) * f2) & 0xFF00FF00;
-        *dst++ = GGL_HOST_TO_RGBA(rb | ag);
+        *dst++ = GGL_HOST_TO_RGBA(blend_8888_srca(s, d, sA));
     }
 }
 
@@ -2333,16 +2361,22 @@ void scanline_t32cb32_rgbx_swizzle(context_t* c)
     size_t ct = c->iterators.xr - x;
     int32_t y = c->iterators.y;
     surface_t* cb = &(c->state.buffers.color);
-    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
 
     surface_t* tex = &(c->state.texture[0].surface);
-    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
     const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
-    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+    if (!clip_1to1_span(tex, x, u, v, ct))
+        return;
+
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) +
+            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y));
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) +
+            (intptr_t(u) + intptr_t(tex->stride) * intptr_t(v));
+    const uint32_t ctx_a = GGL_RGBA_TO_HOST(c->packed) & 0xFF000000;
 
     while (ct--) {
         uint32_t s = GGL_RGBA_TO_HOST(*src++);
-        uint32_t d = 0xFF000000 | (s & 0x0000FF00) | ((s & 0x000000FF) << 16) | ((s >> 16) & 0x000000FF);
+        uint32_t d = ctx_a | (s & 0x0000FF00) | ((s & 0x000000FF) << 16) | ((s >> 16) & 0x000000FF);
         *dst++ = GGL_HOST_TO_RGBA(d);
     }
 }
@@ -2353,12 +2387,17 @@ void scanline_t32cb32_rgba_swizzle(context_t* c)
     size_t ct = c->iterators.xr - x;
     int32_t y = c->iterators.y;
     surface_t* cb = &(c->state.buffers.color);
-    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
 
     surface_t* tex = &(c->state.texture[0].surface);
-    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
     const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
-    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+    if (!clip_1to1_span(tex, x, u, v, ct))
+        return;
+
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) +
+            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y));
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) +
+            (intptr_t(u) + intptr_t(tex->stride) * intptr_t(v));
 
     while (ct--) {
         uint32_t s = GGL_RGBA_TO_HOST(*src++);
@@ -2373,16 +2412,22 @@ void scanline_t32cb32_rgbx_same(context_t* c)
     size_t ct = c->iterators.xr - x;
     int32_t y = c->iterators.y;
     surface_t* cb = &(c->state.buffers.color);
-    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
 
     surface_t* tex = &(c->state.texture[0].surface);
-    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
     const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
-    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+    if (!clip_1to1_span(tex, x, u, v, ct))
+        return;
+
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) +
+            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y));
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) +
+            (intptr_t(u) + intptr_t(tex->stride) * intptr_t(v));
+    const uint32_t ctx_a = GGL_RGBA_TO_HOST(c->packed) & 0xFF000000;
 
     while (ct--) {
         uint32_t s = GGL_RGBA_TO_HOST(*src++);
-        *dst++ = GGL_HOST_TO_RGBA(s | 0xFF000000);
+        *dst++ = GGL_HOST_TO_RGBA((s & 0x00FFFFFF) | ctx_a);
     }
 }
 
@@ -2392,12 +2437,17 @@ void scanline_t32cb32blend_swizzle_srca(context_t* c)
     size_t ct = c->iterators.xr - x;
     int32_t y = c->iterators.y;
     surface_t* cb = &(c->state.buffers.color);
-    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
 
     surface_t* tex = &(c->state.texture[0].surface);
-    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
     const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
-    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+    if (!clip_1to1_span(tex, x, u, v, ct))
+        return;
+
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) +
+            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y));
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) +
+            (intptr_t(u) + intptr_t(tex->stride) * intptr_t(v));
 
     while (ct--) {
         uint32_t s = GGL_RGBA_TO_HOST(*src++);
@@ -2411,12 +2461,8 @@ void scanline_t32cb32blend_swizzle_srca(context_t* c)
             *dst++ = GGL_HOST_TO_RGBA(sb);
             continue;
         }
-        uint32_t f1 = sA + (sA >> 7);
-        uint32_t f2 = 0x100 - f1;
         uint32_t d = GGL_RGBA_TO_HOST(*dst);
-        uint32_t rb = (((sb & 0x00FF00FF) * f1 + (d & 0x00FF00FF) * f2) >> 8) & 0x00FF00FF;
-        uint32_t ag = (((sb >> 8) & 0x00FF00FF) * f1 + ((d >> 8) & 0x00FF00FF) * f2) & 0xFF00FF00;
-        *dst++ = GGL_HOST_TO_RGBA(rb | ag);
+        *dst++ = GGL_HOST_TO_RGBA(blend_8888_srca(sb, d, sA));
     }
 }
 
@@ -2426,12 +2472,17 @@ void scanline_t32cb32blend_same_srca(context_t* c)
     size_t ct = c->iterators.xr - x;
     int32_t y = c->iterators.y;
     surface_t* cb = &(c->state.buffers.color);
-    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
 
     surface_t* tex = &(c->state.texture[0].surface);
-    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
     const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
-    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+    if (!clip_1to1_span(tex, x, u, v, ct))
+        return;
+
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) +
+            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y));
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) +
+            (intptr_t(u) + intptr_t(tex->stride) * intptr_t(v));
 
     while (ct--) {
         uint32_t s = GGL_RGBA_TO_HOST(*src++);
@@ -2444,12 +2495,8 @@ void scanline_t32cb32blend_same_srca(context_t* c)
             *dst++ = GGL_HOST_TO_RGBA(s);
             continue;
         }
-        uint32_t f1 = sA + (sA >> 7);
-        uint32_t f2 = 0x100 - f1;
         uint32_t d = GGL_RGBA_TO_HOST(*dst);
-        uint32_t rb = (((s & 0x00FF00FF) * f1 + (d & 0x00FF00FF) * f2) >> 8) & 0x00FF00FF;
-        uint32_t ag = (((s >> 8) & 0x00FF00FF) * f1 + ((d >> 8) & 0x00FF00FF) * f2) & 0xFF00FF00;
-        *dst++ = GGL_HOST_TO_RGBA(rb | ag);
+        *dst++ = GGL_HOST_TO_RGBA(blend_8888_srca(s, d, sA));
     }
 }
 
@@ -2459,16 +2506,19 @@ void scanline_t8cb32blend_srca(context_t* c)
     size_t ct = c->iterators.xr - x;
     int32_t y = c->iterators.y;
     surface_t* cb = &(c->state.buffers.color);
-    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
 
     surface_t* tex = &(c->state.texture[0].surface);
-    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
     const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
-    const uint8_t* src = reinterpret_cast<const uint8_t*>(tex->data) + (u + (tex->stride * v));
+    if (!clip_1to1_span(tex, x, u, v, ct))
+        return;
 
-    uint32_t col_opaque = GGL_RGBA_TO_HOST(c->packed) | 0xFF000000;
-    uint32_t col_rb = col_opaque & 0x00FF00FF;
-    uint32_t col_g = (col_opaque >> 8) & 0x000000FF;
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) +
+            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y));
+    const uint8_t* src = reinterpret_cast<const uint8_t*>(tex->data) +
+            (intptr_t(u) + intptr_t(tex->stride) * intptr_t(v));
+
+    const uint32_t col_rgb = GGL_RGBA_TO_HOST(c->packed) & 0x00FFFFFF;
 
     while (ct--) {
         uint32_t sA = *src++;
@@ -2477,15 +2527,11 @@ void scanline_t8cb32blend_srca(context_t* c)
             continue;
         }
         if (sA == 0xFF) {
-            *dst++ = GGL_HOST_TO_RGBA(col_opaque);
+            *dst++ = GGL_HOST_TO_RGBA(col_rgb | 0xFF000000);
             continue;
         }
-        uint32_t f1 = sA + (sA >> 7);
-        uint32_t f2 = 0x100 - f1;
         uint32_t d = GGL_RGBA_TO_HOST(*dst);
-        uint32_t rb = ((col_rb * f1 + (d & 0x00FF00FF) * f2) >> 8) & 0x00FF00FF;
-        uint32_t ag = (((col_g | (sA << 16)) * f1 + ((d >> 8) & 0x00FF00FF) * f2)) & 0xFF00FF00;
-        *dst++ = GGL_HOST_TO_RGBA(rb | ag);
+        *dst++ = GGL_HOST_TO_RGBA(blend_8888_srca(col_rgb | (sA << 24), d, sA));
     }
 }
 
@@ -2496,14 +2542,17 @@ void scanline_memcpy(context_t* c)
     int32_t y = c->iterators.y;
     surface_t* cb = &(c->state.buffers.color);
     const GGLFormat* fp = &(c->formats[cb->format]);
-    uint8_t* dst = reinterpret_cast<uint8_t*>(cb->data) +
-                            (x + (cb->stride * y)) * fp->size;
 
     surface_t* tex = &(c->state.texture[0].surface);
-    const int32_t u = (c->state.texture[0].shade.is0>>16) + x;
+    int32_t u = (c->state.texture[0].shade.is0>>16) + x;
     const int32_t v = (c->state.texture[0].shade.it0>>16) + y;
+    if (!clip_1to1_span(tex, x, u, v, ct))
+        return;
+
+    uint8_t* dst = reinterpret_cast<uint8_t*>(cb->data) +
+                            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y)) * fp->size;
     uint8_t *src = reinterpret_cast<uint8_t*>(tex->data) +
-                            (u + (tex->stride * v)) * fp->size;
+                            (intptr_t(u) + intptr_t(tex->stride) * intptr_t(v)) * fp->size;
 
     const size_t size = ct * fp->size;
     memcpy(dst, src, size);
@@ -2588,20 +2637,20 @@ void rect_memcpy(context_t* c, size_t yc)
     surface_t* cb = &(c->state.buffers.color);
     const GGLFormat* fp = &(c->formats[cb->format]);
     uint8_t* dst = reinterpret_cast<uint8_t*>(cb->data) +
-                            (x + (cb->stride * y)) * fp->size;
+                            (intptr_t(x) + intptr_t(cb->stride) * intptr_t(y)) * fp->size;
 
     surface_t* tex = &(c->state.texture[0].surface);
     const int32_t u = (c->state.texture[0].shade.is0>>16) + x;
     const int32_t v = (c->state.texture[0].shade.it0>>16) + y;
     uint8_t *src = reinterpret_cast<uint8_t*>(tex->data) +
-                            (u + (tex->stride * v)) * fp->size;
+                            (intptr_t(u) + intptr_t(tex->stride) * intptr_t(v)) * fp->size;
 
-    if (cb->stride == tex->stride && ct == size_t(cb->stride)) {
+    if (cb->stride > 0 && cb->stride == tex->stride && ct == size_t(cb->stride)) {
         memcpy(dst, src, ct * fp->size * yc);
     } else {
         const size_t size = ct * fp->size;
-        const size_t dbpr = cb->stride  * fp->size;
-        const size_t sbpr = tex->stride * fp->size;
+        const intptr_t dbpr = intptr_t(cb->stride)  * intptr_t(fp->size);
+        const intptr_t sbpr = intptr_t(tex->stride) * intptr_t(fp->size);
         do {
             memcpy(dst, src, size);
             dst += dbpr;

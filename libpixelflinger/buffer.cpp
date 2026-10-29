@@ -92,7 +92,7 @@ static void pick_read_write(surface_t* s)
             return;
         case GGL_PIXEL_FORMAT_RGBX_8888:
             s->read = readRGBX8888;
-            s->write = writeRGBA8888;
+            s->write = write_pixel;
             return;
         case GGL_PIXEL_FORMAT_BGRA_8888:
             s->read = readBGRA8888;
@@ -165,7 +165,8 @@ void read_pixel(const surface_t* s, context_t* c,
 void readRGB565(const surface_t* s, context_t* /*c*/,
         uint32_t x, uint32_t y, pixel_t* pixel)
 {
-    uint16_t v = *(reinterpret_cast<uint16_t*>(s->data) + (x + (s->stride * y)));
+    const int32_t index = int32_t(x) + (s->stride * int32_t(y));
+    uint16_t v = *(reinterpret_cast<const uint16_t*>(s->data) + index);
     pixel->c[0] = 0;
     pixel->c[1] = v>>11;
     pixel->c[2] = (v>>5)&0x3F;
@@ -179,7 +180,8 @@ void readRGB565(const surface_t* s, context_t* /*c*/,
 void readABGR8888(const surface_t* s, context_t* /*c*/,
         uint32_t x, uint32_t y, pixel_t* pixel)
 {
-    uint32_t v = *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y)));
+    const int32_t index = int32_t(x) + (s->stride * int32_t(y));
+    uint32_t v = *(reinterpret_cast<const uint32_t*>(s->data) + index);
     v = GGL_RGBA_TO_HOST(v);
     pixel->c[0] = v>>24;        // A
     pixel->c[1] = v&0xFF;       // R
@@ -194,7 +196,8 @@ void readABGR8888(const surface_t* s, context_t* /*c*/,
 void readRGBX8888(const surface_t* s, context_t* /*c*/,
         uint32_t x, uint32_t y, pixel_t* pixel)
 {
-    uint32_t v = *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y)));
+    const int32_t index = int32_t(x) + (s->stride * int32_t(y));
+    uint32_t v = *(reinterpret_cast<const uint32_t*>(s->data) + index);
     v = GGL_RGBA_TO_HOST(v);
     pixel->c[0] = 0;
     pixel->c[1] = v&0xFF;       // R
@@ -209,7 +212,8 @@ void readRGBX8888(const surface_t* s, context_t* /*c*/,
 void readBGRA8888(const surface_t* s, context_t* /*c*/,
         uint32_t x, uint32_t y, pixel_t* pixel)
 {
-    uint32_t v = *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y)));
+    const int32_t index = int32_t(x) + (s->stride * int32_t(y));
+    uint32_t v = *(reinterpret_cast<const uint32_t*>(s->data) + index);
     v = GGL_RGBA_TO_HOST(v);
     pixel->c[0] = v>>24;        // A
     pixel->c[1] = (v>>16)&0xFF; // R
@@ -224,7 +228,8 @@ void readBGRA8888(const surface_t* s, context_t* /*c*/,
 void readA8(const surface_t* s, context_t* /*c*/,
         uint32_t x, uint32_t y, pixel_t* pixel)
 {
-    uint8_t v = *(reinterpret_cast<uint8_t*>(s->data) + (x + (s->stride * y)));
+    const int32_t index = int32_t(x) + (s->stride * int32_t(y));
+    uint8_t v = *(reinterpret_cast<const uint8_t*>(s->data) + index);
     pixel->c[0] = v;
     pixel->c[1] = 0;
     pixel->c[2] = 0;
@@ -240,10 +245,12 @@ void writeRGBA8888(const surface_t* s, context_t* c,
 {
     if (ggl_likely((c->state.mask.color == 0xF) &&
                    !(c->state.enables & GGL_ENABLE_LOGIC_OP) &&
+                   (pixel->s[0] == 8 || pixel->s[0] == 0) &&
                    (pixel->s[1] == 8) && (pixel->s[2] == 8) && (pixel->s[3] == 8))) {
+        const int32_t index = int32_t(x) + (s->stride * int32_t(y));
         uint32_t a = (pixel->s[0] == 8) ? pixel->c[0] : 0xFF;
         uint32_t v = (a << 24) | (pixel->c[3] << 16) | (pixel->c[2] << 8) | pixel->c[1];
-        *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y))) = GGL_HOST_TO_RGBA(v);
+        *(reinterpret_cast<uint32_t*>(s->data) + index) = GGL_HOST_TO_RGBA(v);
         return;
     }
     write_pixel(s, c, x, y, pixel);
@@ -254,10 +261,12 @@ void writeBGRA8888(const surface_t* s, context_t* c,
 {
     if (ggl_likely((c->state.mask.color == 0xF) &&
                    !(c->state.enables & GGL_ENABLE_LOGIC_OP) &&
+                   (pixel->s[0] == 8 || pixel->s[0] == 0) &&
                    (pixel->s[1] == 8) && (pixel->s[2] == 8) && (pixel->s[3] == 8))) {
+        const int32_t index = int32_t(x) + (s->stride * int32_t(y));
         uint32_t a = (pixel->s[0] == 8) ? pixel->c[0] : 0xFF;
         uint32_t v = (a << 24) | (pixel->c[1] << 16) | (pixel->c[2] << 8) | pixel->c[3];
-        *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y))) = GGL_HOST_TO_RGBA(v);
+        *(reinterpret_cast<uint32_t*>(s->data) + index) = GGL_HOST_TO_RGBA(v);
         return;
     }
     write_pixel(s, c, x, y, pixel);
