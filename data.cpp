@@ -555,7 +555,7 @@ void DataManager::SetBackupFolder()
 			}
 		}
 	} else {
-		if (PartitionManager.Fstab_Processed() != 0) {
+		if (PartitionManager.Fstab_Processed() != 0 && PartitionManager.Get_Default_Storage_Partition() != NULL) {
 			LOGINFO("Storage partition '%s' not found\n", str.c_str());
 			gui_err("unable_locate_storage=Unable to locate storage device.");
 		}
@@ -1092,22 +1092,26 @@ void DataManager::ReadSettingsFile(void)
 	GetValue(TW_IS_ENCRYPTED, is_enc);
 	GetValue(TW_HAS_DATA_MEDIA, has_data_media);
 
-	memset(mkdir_path, 0, sizeof(mkdir_path));
-	memset(settings_file, 0, sizeof(settings_file));
-	sprintf(mkdir_path, "%s%s", GetSettingsStoragePath().c_str(), GetStrValue(TW_RECOVERY_NAME).c_str());
-	sprintf(settings_file, "%s%s", mkdir_path, TW_SETTINGS_FILE);
+	if (!GetSettingsStoragePath().empty()) {
+		memset(mkdir_path, 0, sizeof(mkdir_path));
+		memset(settings_file, 0, sizeof(settings_file));
+		sprintf(mkdir_path, "%s%s", GetSettingsStoragePath().c_str(), GetStrValue(TW_RECOVERY_NAME).c_str());
+		sprintf(settings_file, "%s%s", mkdir_path, TW_SETTINGS_FILE);
 
-	if (!PartitionManager.Mount_Settings_Storage(false))
-	{
-		usleep(500000);
 		if (!PartitionManager.Mount_Settings_Storage(false))
-			gui_msg(Msg(msg::kError, "unable_to_mount=Unable to mount {1}")(settings_file));
+		{
+			usleep(500000);
+			if (!PartitionManager.Mount_Settings_Storage(false))
+				gui_msg(Msg(msg::kError, "unable_to_mount=Unable to mount {1}")(settings_file));
+		}
+
+		mkdir(mkdir_path, 0777);
+
+		LOGINFO("Attempt to load settings from settings file...\n");
+		LoadValues(settings_file);
+	} else {
+		mBackingFile.clear();
 	}
-
-	mkdir(mkdir_path, 0777);
-
-	LOGINFO("Attempt to load settings from settings file...\n");
-	LoadValues(settings_file);
 	Output_Version();
 #endif // ifdef TW_OEM_BUILD
 	PartitionManager.Mount_All_Storage();
@@ -1139,6 +1143,10 @@ void DataManager::Vibrate(const string& varName)
 
 void DataManager::LoadTWRPFolderInfo(void)
 {
+	if (GetSettingsStoragePath().empty()) {
+		mBackingFile.clear();
+		return;
+	}
 	SetValue(TW_RECOVERY_FOLDER_VAR, TWFunc::Check_For_TwrpFolder());
 	mBackingFile = GetSettingsStoragePath() + GetStrValue(TW_RECOVERY_NAME) + '/' + TW_SETTINGS_FILE;
 }

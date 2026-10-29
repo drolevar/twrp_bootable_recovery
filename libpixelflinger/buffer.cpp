@@ -33,6 +33,16 @@ static void readRGB565(const surface_t* s, context_t* c,
         uint32_t x, uint32_t y, pixel_t* pixel);
 static void readABGR8888(const surface_t* s, context_t* c,
         uint32_t x, uint32_t y, pixel_t* pixel);
+static void readRGBX8888(const surface_t* s, context_t* c,
+        uint32_t x, uint32_t y, pixel_t* pixel);
+static void readBGRA8888(const surface_t* s, context_t* c,
+        uint32_t x, uint32_t y, pixel_t* pixel);
+static void readA8(const surface_t* s, context_t* c,
+        uint32_t x, uint32_t y, pixel_t* pixel);
+static void writeRGBA8888(const surface_t* s, context_t* c,
+        uint32_t x, uint32_t y, const pixel_t* pixel);
+static void writeBGRA8888(const surface_t* s, context_t* c,
+        uint32_t x, uint32_t y, const pixel_t* pixel);
 
 static uint32_t logic_op(int op, uint32_t s, uint32_t d);
 static uint32_t extract(uint32_t v, int h, int l, int bits);
@@ -76,11 +86,31 @@ static void pick_read_write(surface_t* s)
 {
     // Choose best reader/writers.
     switch (s->format) {
-        case GGL_PIXEL_FORMAT_RGBA_8888:    s->read = readABGR8888;  break;
-        case GGL_PIXEL_FORMAT_RGB_565:      s->read = readRGB565;    break;
-        default:                            s->read = read_pixel;    break;
+        case GGL_PIXEL_FORMAT_RGBA_8888:
+            s->read = readABGR8888;
+            s->write = writeRGBA8888;
+            return;
+        case GGL_PIXEL_FORMAT_RGBX_8888:
+            s->read = readRGBX8888;
+            s->write = writeRGBA8888;
+            return;
+        case GGL_PIXEL_FORMAT_BGRA_8888:
+            s->read = readBGRA8888;
+            s->write = writeBGRA8888;
+            return;
+        case GGL_PIXEL_FORMAT_A_8:
+            s->read = readA8;
+            s->write = write_pixel;
+            return;
+        case GGL_PIXEL_FORMAT_RGB_565:
+            s->read = readRGB565;
+            s->write = write_pixel;
+            return;
+        default:
+            s->read = read_pixel;
+            s->write = write_pixel;
+            return;
     }
-    s->write = write_pixel;
 }
 
 void ggl_pick_texture(context_t* c)
@@ -159,6 +189,78 @@ void readABGR8888(const surface_t* s, context_t* /*c*/,
     pixel->s[1] = 
     pixel->s[2] = 
     pixel->s[3] = 8;
+}
+
+void readRGBX8888(const surface_t* s, context_t* /*c*/,
+        uint32_t x, uint32_t y, pixel_t* pixel)
+{
+    uint32_t v = *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y)));
+    v = GGL_RGBA_TO_HOST(v);
+    pixel->c[0] = 0;
+    pixel->c[1] = v&0xFF;       // R
+    pixel->c[2] = (v>>8)&0xFF;  // G
+    pixel->c[3] = (v>>16)&0xFF; // B
+    pixel->s[0] = 0;
+    pixel->s[1] =
+    pixel->s[2] =
+    pixel->s[3] = 8;
+}
+
+void readBGRA8888(const surface_t* s, context_t* /*c*/,
+        uint32_t x, uint32_t y, pixel_t* pixel)
+{
+    uint32_t v = *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y)));
+    v = GGL_RGBA_TO_HOST(v);
+    pixel->c[0] = v>>24;        // A
+    pixel->c[1] = (v>>16)&0xFF; // R
+    pixel->c[2] = (v>>8)&0xFF;  // G
+    pixel->c[3] = v&0xFF;       // B
+    pixel->s[0] =
+    pixel->s[1] =
+    pixel->s[2] =
+    pixel->s[3] = 8;
+}
+
+void readA8(const surface_t* s, context_t* /*c*/,
+        uint32_t x, uint32_t y, pixel_t* pixel)
+{
+    uint8_t v = *(reinterpret_cast<uint8_t*>(s->data) + (x + (s->stride * y)));
+    pixel->c[0] = v;
+    pixel->c[1] = 0;
+    pixel->c[2] = 0;
+    pixel->c[3] = 0;
+    pixel->s[0] = 8;
+    pixel->s[1] = 0;
+    pixel->s[2] = 0;
+    pixel->s[3] = 0;
+}
+
+void writeRGBA8888(const surface_t* s, context_t* c,
+        uint32_t x, uint32_t y, const pixel_t* pixel)
+{
+    if (ggl_likely((c->state.mask.color == 0xF) &&
+                   !(c->state.enables & GGL_ENABLE_LOGIC_OP) &&
+                   (pixel->s[1] == 8) && (pixel->s[2] == 8) && (pixel->s[3] == 8))) {
+        uint32_t a = (pixel->s[0] == 8) ? pixel->c[0] : 0xFF;
+        uint32_t v = (a << 24) | (pixel->c[3] << 16) | (pixel->c[2] << 8) | pixel->c[1];
+        *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y))) = GGL_HOST_TO_RGBA(v);
+        return;
+    }
+    write_pixel(s, c, x, y, pixel);
+}
+
+void writeBGRA8888(const surface_t* s, context_t* c,
+        uint32_t x, uint32_t y, const pixel_t* pixel)
+{
+    if (ggl_likely((c->state.mask.color == 0xF) &&
+                   !(c->state.enables & GGL_ENABLE_LOGIC_OP) &&
+                   (pixel->s[1] == 8) && (pixel->s[2] == 8) && (pixel->s[3] == 8))) {
+        uint32_t a = (pixel->s[0] == 8) ? pixel->c[0] : 0xFF;
+        uint32_t v = (a << 24) | (pixel->c[1] << 16) | (pixel->c[2] << 8) | pixel->c[3];
+        *(reinterpret_cast<uint32_t*>(s->data) + (x + (s->stride * y))) = GGL_HOST_TO_RGBA(v);
+        return;
+    }
+    write_pixel(s, c, x, y, pixel);
 }
 
 void write_pixel(const surface_t* s, context_t* c,

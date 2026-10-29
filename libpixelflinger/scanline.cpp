@@ -50,16 +50,22 @@
 
 #ifdef NDEBUG
 #   define ANDROID_RELEASE
-#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
 #else
 #   define ANDROID_DEBUG
-#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
 #endif
 
+#ifdef TW_DISABLE_PIXELFLINGER_JIT
+// Retain linked assembly shortcuts and use C for every remaining pipeline.
+// Selecting ANDROID_CODEGEN_ASM alone does not disable the generator below.
+#   define ANDROID_CODEGEN      ANDROID_CODEGEN_ASM
+#   define ANDROID_ARM_CODEGEN  0
+#else
+#   define ANDROID_CODEGEN      ANDROID_CODEGEN_GENERATED
 #if defined(__arm__) || (defined(__mips__) && ((!defined(__LP64__) && __mips_isa_rev < 6) || defined(__LP64__))) || defined(__aarch64__)
 #   define ANDROID_ARM_CODEGEN  1
 #else
 #   define ANDROID_ARM_CODEGEN  0
+#endif
 #endif
 
 #define DEBUG__CODEGEN_ONLY     0
@@ -112,6 +118,13 @@ static void scanline_t32cb16_clamp_dither(context_t* c);
 static void scanline_col32cb16blend(context_t* c);
 static void scanline_t16cb16_clamp(context_t* c);
 static void scanline_t16cb16blend_clamp_mod(context_t* c);
+static void scanline_col32cb32blend_srca(context_t* c);
+static void scanline_t32cb32_rgbx_swizzle(context_t* c);
+static void scanline_t32cb32_rgba_swizzle(context_t* c);
+static void scanline_t32cb32_rgbx_same(context_t* c);
+static void scanline_t32cb32blend_swizzle_srca(context_t* c);
+static void scanline_t32cb32blend_same_srca(context_t* c);
+static void scanline_t8cb32blend_srca(context_t* c);
 static void scanline_memcpy(context_t* c);
 static void scanline_memset8(context_t* c);
 static void scanline_memset16(context_t* c);
@@ -247,6 +260,43 @@ static shortcut_t shortcuts[] = {
     { { { 0x03515104, 0x00000077, { 0x00000000, 0x00000000 } },
         { 0xFFFFFFFF, 0xFFFFFFFF, { 0xFFFFFFFF, 0xFFFFFFFF } } },
         "565 fb, 8888 fixed color", scanline_col32cb16blend, init_y_packed  },  
+    /* 32-bit BGRA_8888 (5) and RGBA_8888 (1) non-JIT fast paths */
+    { { { 0x03545405, 0x00000077, { 0x00000000, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0xFFFFFFFF } } },
+        "bgra8888 fb, fixed color SRCA", scanline_col32cb32blend_srca, init_y_packed },
+    { { { 0x03545401, 0x00000077, { 0x00000000, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0xFFFFFFFF } } },
+        "rgba8888 fb, fixed color SRCA", scanline_col32cb32blend_srca, init_y_packed },
+    { { { 0x03010105, 0x00000077, { 0x00000A02, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "bgra8888 fb, rgbx8888 tx, SRC", scanline_t32cb32_rgbx_swizzle, init_y_noop },
+    { { { 0x03010105, 0x00000077, { 0x00000A01, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "bgra8888 fb, rgba8888 tx, SRC", scanline_t32cb32_rgba_swizzle, init_y_noop },
+    { { { 0x03010101, 0x00000077, { 0x00000A05, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "rgba8888 fb, bgra8888 tx, SRC", scanline_t32cb32_rgba_swizzle, init_y_noop },
+    { { { 0x03010101, 0x00000077, { 0x00000A02, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "rgba8888 fb, rgbx8888 tx, SRC", scanline_t32cb32_rgbx_same, init_y_noop },
+    { { { 0x03545405, 0x00000077, { 0x00000A01, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "bgra8888 fb, rgba8888 tx, SRCA", scanline_t32cb32blend_swizzle_srca, init_y_noop },
+    { { { 0x03545401, 0x00000077, { 0x00000A05, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "rgba8888 fb, bgra8888 tx, SRCA", scanline_t32cb32blend_swizzle_srca, init_y_noop },
+    { { { 0x03545405, 0x00000077, { 0x00000A05, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "bgra8888 fb, bgra8888 tx, SRCA", scanline_t32cb32blend_same_srca, init_y_noop },
+    { { { 0x03545401, 0x00000077, { 0x00000A01, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "rgba8888 fb, rgba8888 tx, SRCA", scanline_t32cb32blend_same_srca, init_y_noop },
+    { { { 0x03545405, 0x00000077, { 0x00000A08, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "bgra8888 fb, a8 tx, SRCA", scanline_t8cb32blend_srca, init_y_packed },
+    { { { 0x03545401, 0x00000077, { 0x00000A08, 0x00000000 } },
+        { 0xFFFFFFFF, 0xFFFFFEFF, { 0xFFFFFFFF, 0x0000003F } } },
+        "rgba8888 fb, a8 tx, SRCA", scanline_t8cb32blend_srca, init_y_packed },
     { { { 0x00000000, 0x00000000, { 0x00000000, 0x00000000 } },
         { 0x00000000, 0x00000007, { 0x00000000, 0x00000000 } } },
         "(nop) alpha test", scanline_noop, init_y_noop },
@@ -2245,6 +2295,197 @@ void scanline_t16cb16blend_clamp_mod(context_t* c)
         uint16_t s = ci.get_pixel16();
         blender.write(s, di.dst);
         di.dst++;
+    }
+}
+
+void scanline_col32cb32blend_srca(context_t* c)
+{
+    uint32_t s = GGL_RGBA_TO_HOST(c->packed);
+    uint32_t sA = s >> 24;
+    if (sA == 0) {
+        return;
+    }
+    if (sA == 0xFF) {
+        scanline_memset32(c);
+        return;
+    }
+    int32_t x = c->iterators.xl;
+    size_t ct = c->iterators.xr - x;
+    int32_t y = c->iterators.y;
+    surface_t* cb = &(c->state.buffers.color);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
+
+    uint32_t f1 = sA + (sA >> 7);
+    uint32_t f2 = 0x100 - f1;
+    uint32_t s_rb = (s & 0x00FF00FF) * f1;
+    uint32_t s_ag = ((s >> 8) & 0x00FF00FF) * f1;
+    while (ct--) {
+        uint32_t d = GGL_RGBA_TO_HOST(*dst);
+        uint32_t rb = ((s_rb + (d & 0x00FF00FF) * f2) >> 8) & 0x00FF00FF;
+        uint32_t ag = (s_ag + ((d >> 8) & 0x00FF00FF) * f2) & 0xFF00FF00;
+        *dst++ = GGL_HOST_TO_RGBA(rb | ag);
+    }
+}
+
+void scanline_t32cb32_rgbx_swizzle(context_t* c)
+{
+    int32_t x = c->iterators.xl;
+    size_t ct = c->iterators.xr - x;
+    int32_t y = c->iterators.y;
+    surface_t* cb = &(c->state.buffers.color);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
+
+    surface_t* tex = &(c->state.texture[0].surface);
+    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+
+    while (ct--) {
+        uint32_t s = GGL_RGBA_TO_HOST(*src++);
+        uint32_t d = 0xFF000000 | (s & 0x0000FF00) | ((s & 0x000000FF) << 16) | ((s >> 16) & 0x000000FF);
+        *dst++ = GGL_HOST_TO_RGBA(d);
+    }
+}
+
+void scanline_t32cb32_rgba_swizzle(context_t* c)
+{
+    int32_t x = c->iterators.xl;
+    size_t ct = c->iterators.xr - x;
+    int32_t y = c->iterators.y;
+    surface_t* cb = &(c->state.buffers.color);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
+
+    surface_t* tex = &(c->state.texture[0].surface);
+    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+
+    while (ct--) {
+        uint32_t s = GGL_RGBA_TO_HOST(*src++);
+        uint32_t d = (s & 0xFF00FF00) | ((s & 0x000000FF) << 16) | ((s >> 16) & 0x000000FF);
+        *dst++ = GGL_HOST_TO_RGBA(d);
+    }
+}
+
+void scanline_t32cb32_rgbx_same(context_t* c)
+{
+    int32_t x = c->iterators.xl;
+    size_t ct = c->iterators.xr - x;
+    int32_t y = c->iterators.y;
+    surface_t* cb = &(c->state.buffers.color);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
+
+    surface_t* tex = &(c->state.texture[0].surface);
+    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+
+    while (ct--) {
+        uint32_t s = GGL_RGBA_TO_HOST(*src++);
+        *dst++ = GGL_HOST_TO_RGBA(s | 0xFF000000);
+    }
+}
+
+void scanline_t32cb32blend_swizzle_srca(context_t* c)
+{
+    int32_t x = c->iterators.xl;
+    size_t ct = c->iterators.xr - x;
+    int32_t y = c->iterators.y;
+    surface_t* cb = &(c->state.buffers.color);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
+
+    surface_t* tex = &(c->state.texture[0].surface);
+    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+
+    while (ct--) {
+        uint32_t s = GGL_RGBA_TO_HOST(*src++);
+        uint32_t sA = s >> 24;
+        if (sA == 0) {
+            dst++;
+            continue;
+        }
+        uint32_t sb = (s & 0xFF00FF00) | ((s & 0x000000FF) << 16) | ((s >> 16) & 0x000000FF);
+        if (sA == 0xFF) {
+            *dst++ = GGL_HOST_TO_RGBA(sb);
+            continue;
+        }
+        uint32_t f1 = sA + (sA >> 7);
+        uint32_t f2 = 0x100 - f1;
+        uint32_t d = GGL_RGBA_TO_HOST(*dst);
+        uint32_t rb = (((sb & 0x00FF00FF) * f1 + (d & 0x00FF00FF) * f2) >> 8) & 0x00FF00FF;
+        uint32_t ag = (((sb >> 8) & 0x00FF00FF) * f1 + ((d >> 8) & 0x00FF00FF) * f2) & 0xFF00FF00;
+        *dst++ = GGL_HOST_TO_RGBA(rb | ag);
+    }
+}
+
+void scanline_t32cb32blend_same_srca(context_t* c)
+{
+    int32_t x = c->iterators.xl;
+    size_t ct = c->iterators.xr - x;
+    int32_t y = c->iterators.y;
+    surface_t* cb = &(c->state.buffers.color);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
+
+    surface_t* tex = &(c->state.texture[0].surface);
+    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
+    const uint32_t* src = reinterpret_cast<const uint32_t*>(tex->data) + (u + (tex->stride * v));
+
+    while (ct--) {
+        uint32_t s = GGL_RGBA_TO_HOST(*src++);
+        uint32_t sA = s >> 24;
+        if (sA == 0) {
+            dst++;
+            continue;
+        }
+        if (sA == 0xFF) {
+            *dst++ = GGL_HOST_TO_RGBA(s);
+            continue;
+        }
+        uint32_t f1 = sA + (sA >> 7);
+        uint32_t f2 = 0x100 - f1;
+        uint32_t d = GGL_RGBA_TO_HOST(*dst);
+        uint32_t rb = (((s & 0x00FF00FF) * f1 + (d & 0x00FF00FF) * f2) >> 8) & 0x00FF00FF;
+        uint32_t ag = (((s >> 8) & 0x00FF00FF) * f1 + ((d >> 8) & 0x00FF00FF) * f2) & 0xFF00FF00;
+        *dst++ = GGL_HOST_TO_RGBA(rb | ag);
+    }
+}
+
+void scanline_t8cb32blend_srca(context_t* c)
+{
+    int32_t x = c->iterators.xl;
+    size_t ct = c->iterators.xr - x;
+    int32_t y = c->iterators.y;
+    surface_t* cb = &(c->state.buffers.color);
+    uint32_t* dst = reinterpret_cast<uint32_t*>(cb->data) + (x + (cb->stride * y));
+
+    surface_t* tex = &(c->state.texture[0].surface);
+    const int32_t u = (c->state.texture[0].shade.is0 >> 16) + x;
+    const int32_t v = (c->state.texture[0].shade.it0 >> 16) + y;
+    const uint8_t* src = reinterpret_cast<const uint8_t*>(tex->data) + (u + (tex->stride * v));
+
+    uint32_t col_opaque = GGL_RGBA_TO_HOST(c->packed) | 0xFF000000;
+    uint32_t col_rb = col_opaque & 0x00FF00FF;
+    uint32_t col_g = (col_opaque >> 8) & 0x000000FF;
+
+    while (ct--) {
+        uint32_t sA = *src++;
+        if (sA == 0) {
+            dst++;
+            continue;
+        }
+        if (sA == 0xFF) {
+            *dst++ = GGL_HOST_TO_RGBA(col_opaque);
+            continue;
+        }
+        uint32_t f1 = sA + (sA >> 7);
+        uint32_t f2 = 0x100 - f1;
+        uint32_t d = GGL_RGBA_TO_HOST(*dst);
+        uint32_t rb = ((col_rb * f1 + (d & 0x00FF00FF) * f2) >> 8) & 0x00FF00FF;
+        uint32_t ag = (((col_g | (sA << 16)) * f1 + ((d >> 8) & 0x00FF00FF) * f2)) & 0xFF00FF00;
+        *dst++ = GGL_HOST_TO_RGBA(rb | ag);
     }
 }
 

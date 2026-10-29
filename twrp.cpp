@@ -246,7 +246,7 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
 	if (cacheDir == DATA_LOGS_DIR)
 		cacheDir = "/data/cache";
 	std::string orsFile = cacheDir + "/recovery/openrecoveryscript";
-	if ((DataManager::GetIntValue(TW_IS_ENCRYPTED) == 0 || skip_decryption) && (TWFunc::Path_Exists(SCRIPT_FILE_TMP) || TWFunc::Path_Exists(orsFile))) {
+	if ((DataManager::GetIntValue(TW_IS_ENCRYPTED) == 0 || skip_decryption) && (TWFunc::Path_Exists(SCRIPT_FILE_TMP) || (!cacheDir.empty() && TWFunc::Path_Exists(orsFile)))) {
 		OpenRecoveryScript::Run_OpenRecoveryScript();
 	}
 
@@ -289,6 +289,9 @@ static void process_recovery_mode(twrpAdbBuFifo* adb_bu_fifo, bool skip_decrypti
 			}
 			DataManager::ReadSettingsFile();
 #endif
+		} else if (sys->Is_Read_Only()) {
+			DataManager::SetValue("tw_mount_system_ro", 1);
+			DataManager::SetValue("tw_never_show_system_ro_page", 1);
 		} else {
 			if ((DataManager::GetIntValue("tw_mount_system_ro") == 0 && sys->Check_Lifetime_Writes() == 0) || DataManager::GetIntValue("tw_mount_system_ro") == 2) {
 				if (DataManager::GetIntValue("tw_never_show_system_ro_page") == 0) {
@@ -467,10 +470,12 @@ int main(int argc, char **argv) {
 #endif
 			// Format the value based on the background updates
 			value = std::to_string(lastVal) + "%" + charging;
-			DataManager::SetValue("tw_battery", value);
+			if (value != DataManager::GetStrValue("tw_battery")) {
+				DataManager::SetValue("tw_battery", value);
+			}
 
-			// Sleep for a specified interval (e.g., 1 second) before checking again
-			std::this_thread::sleep_for(std::chrono::seconds(1));
+			// Sleep for a specified interval (e.g., 5 seconds) before checking again
+			std::this_thread::sleep_for(std::chrono::seconds(5));
 		}
 	};
 

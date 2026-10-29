@@ -175,13 +175,14 @@ int GUISlider::NotifyTouch(TOUCH_STATE state, int x, int y)
 	switch (state)
 	{
 	case TOUCH_START:
-		if (x >= mRenderX && x <= mRenderX + sTouchW &&
-			y >= mRenderY && y <= mRenderY + mRenderH)
+		if (x >= mRenderX && x <= mRenderX + (sTouchW * 2) &&
+			y >= mRenderY - (sTouchH / 2) && y <= mRenderY + mRenderH + (sTouchH / 2))
 		{
 			sCurTouchX = x - (sTouchW / 2);
 			if (sCurTouchX < mRenderX)
 				sCurTouchX = mRenderX;
 			dragging = true;
+			sUpdate = 1;
 		}
 		break;
 
@@ -206,6 +207,15 @@ int GUISlider::NotifyTouch(TOUCH_STATE state, int x, int y)
 	case TOUCH_RELEASE:
 		if (!dragging)
 			return 0;
+
+		if (y >= mRenderY - sTouchH && y <= mRenderY + (sTouchH * 2))
+		{
+			int releaseX = x - (sTouchW / 2);
+			if (releaseX > sCurTouchX)
+				sCurTouchX = releaseX;
+			if (sCurTouchX > mRenderX + mRenderW - sTouchW)
+				sCurTouchX = mRenderX + mRenderW - sTouchW;
+		}
 
 		if (sCurTouchX >= mRenderX + mRenderW - sTouchW) {
 

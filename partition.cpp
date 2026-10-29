@@ -687,6 +687,8 @@ void TWPartition::Setup_Data_Partition(bool Display_Error) {
 
 	// Ensure /data is not mounted as tmpfs for qcom hardware decrypt
 	UnMount(false);
+	if (Mount_Read_Only)
+		return;
 
 #ifdef TW_INCLUDE_CRYPTO
 	#ifdef TW_PREPARE_DATA_MEDIA_EARLY
@@ -844,7 +846,7 @@ bool TWPartition::Decrypt_FBE_DE() {
 }
 
 void TWPartition::Setup_Cache_Partition(bool Display_Error __unused) {
-	if (Mount_Point != "/cache")
+	if (Mount_Point != "/cache" || Mount_Read_Only)
 		return;
 
 	if (!Mount(true))
@@ -1532,7 +1534,7 @@ bool TWPartition::Find_Partition_Size(void) {
 
 		tmpdevice = "/dev/block/";
 		tmpdevice += device;
-		if (tmpdevice == Primary_Block_Device || tmpdevice == Alternate_Block_Device) {
+		if (tmpdevice == Primary_Block_Device || tmpdevice == Alternate_Block_Device || tmpdevice == Actual_Block_Device) {
 			// Adjust block size to byte size
 			Size = blocks * 1024ULL;
 			fclose(fp);
@@ -3061,10 +3063,16 @@ bool TWPartition::Update_Size(bool Display_Error) {
 	ro = Mount_Read_Only;
 	Mount_Read_Only = true;
 
-	if (!Can_Be_Mounted && !Is_Encrypted) {
+	if ((!Can_Be_Mounted && !Is_Encrypted) || (ro && !Can_Be_Backed_Up && !Is_Mounted())) {
 		if (TWFunc::Path_Exists(Actual_Block_Device) && Find_Partition_Size()) {
-			Used = Size;
-			Backup_Size = Size;
+			if (!Can_Be_Mounted) {
+				Used = Size;
+				Backup_Size = Size;
+			} else {
+				Used = 0;
+				Free = 0;
+				Backup_Size = 0;
+			}
 			goto success;
 		}
 		goto fail;

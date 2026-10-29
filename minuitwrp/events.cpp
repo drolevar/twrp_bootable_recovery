@@ -501,6 +501,11 @@ static int vk_modify(struct ev *e, struct input_event *ev)
 
 	// Handle keyboard events, value of 1 indicates key down, 0 indicates key up
 	if (ev->type == EV_KEY) {
+		if (ev->code == BTN_TOUCH || ev->code == BTN_TOOL_FINGER) {
+			if (ev->code == BTN_TOUCH && ev->value == 0)
+				touchReleaseOnNextSynReport = 1;
+			return 1;
+		}
 		return 0;
 	}
 
@@ -689,7 +694,7 @@ static int vk_modify(struct ev *e, struct input_event *ev)
 #endif
 
     // Discard the MT versions
-    if (ev->code == SYN_MT_REPORT)      return 0;
+    if (ev->code == SYN_MT_REPORT)      return 1;
 
     if (((lastWasSynReport == 1 || touchReleaseOnNextSynReport == 1) && !use_tracking_id_negative_as_touch_release) || (use_tracking_id_negative_as_touch_release && touchReleaseOnNextSynReport == 2))
     {

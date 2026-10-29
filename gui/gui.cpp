@@ -277,6 +277,7 @@ void InputHandler::process_EV_ABS(input_event& ev)
 #ifndef TW_USE_KEY_CODE_TOUCH_SYNC
 		if (state == AS_IN_ACTION_AREA)
 		{
+			handleDrag();
 			LOGEVENT("TOUCH_RELEASE: %d,%d\n", x, y);
 			PageManager::NotifyTouch(TOUCH_RELEASE, x, y);
 		}
@@ -525,9 +526,12 @@ static void loopTimer(int input_timeout_ms)
 		return;
 	}
 
+	bool any_event = false;
 	do
 	{
 		bool got_event = input_handler.processInput(input_timeout_ms); // get inputs but don't send drag notices
+		if (got_event)
+			any_event = true;
 		timespec curTime;
 		clock_gettime(CLOCK_MONOTONIC, &curTime);
 
@@ -535,9 +539,10 @@ static void loopTimer(int input_timeout_ms)
 
 		// This is really 2 or TW_FRAMERATE times per second
 		// As long as we get events, increase the timeout so we can catch up with input
-		long timeout = got_event ? 500000000 : (1.0 / TW_FRAMERATE * 1000000000);
+		long frame_ns = (1.0 / TW_FRAMERATE * 1000000000);
+		long timeout = got_event ? 500000000 : frame_ns;
 
-		if (diff.tv_sec || diff.tv_nsec > timeout)
+		if (diff.tv_sec || diff.tv_nsec > timeout || (!got_event && any_event))
 		{
 			// int32_t input_time = TWFunc::timespec_diff_ms(lastCall, curTime);
 			// LOGINFO("loopTimer(): %u ms, count: %u\n", input_time, count);
@@ -547,10 +552,16 @@ static void loopTimer(int input_timeout_ms)
 			return;
 		}
 
-		// We need to sleep some period time microseconds
-		//unsigned int sleepTime = 33333 -(diff.tv_nsec / 1000);
-		//usleep(sleepTime); // removed so we can scan for input
-		input_timeout_ms = 0;
+		// Sleep inside poll() for the remainder of the frame interval instead of busy-spinning
+		if (!got_event)
+		{
+			long rem_ms = (frame_ns - diff.tv_nsec) / 1000000;
+			input_timeout_ms = (rem_ms > 1) ? (int)rem_ms : 1;
+		}
+		else
+		{
+			input_timeout_ms = 0;
+		}
 	} while (1);
 }
 

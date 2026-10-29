@@ -1,5 +1,25 @@
+// The default remains unchanged. Devices may opt into a software renderer
+// that does not require writable executable memory.
+soong_config_module_type {
+    name: "twrp_pixelflinger_defaults",
+    module_type: "cc_defaults",
+    config_namespace: "twrpPixelflinger",
+    bool_variables: ["disable_jit"],
+    properties: ["cflags"],
+}
+
+twrp_pixelflinger_defaults {
+    name: "twrp_pixelflinger_config_defaults",
+    soong_config_variables: {
+        disable_jit: {
+            cflags: ["-DTW_DISABLE_PIXELFLINGER_JIT"],
+        },
+    },
+}
+
 cc_defaults {
     name: "libpixelflingertwrp_defaults",
+    defaults: ["twrp_pixelflinger_config_defaults"],
 
     cflags: [
         "-fstrict-aliasing",

@@ -524,9 +524,15 @@ void TWFunc::Copy_Log(string Source, string Destination) {
 
 	if (pipe(logPipe) < 0) {
 		LOGINFO("Unable to open pipe to write to persistent log file: %s\n", Destination.c_str());
+		return;
 	}
 
 	destination_fd = open(Destination.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0666);
+	if (destination_fd < 0) {
+		close(logPipe[0]);
+		close(logPipe[1]);
+		return;
+	}
 
 	pigz_pid = fork();
 	if (pigz_pid < 0) {
@@ -563,9 +569,12 @@ void TWFunc::Copy_Log(string Source, string Destination) {
 }
 
 void TWFunc::Update_Log_File(void) {
-	std::string recoveryDir = get_log_dir() + "recovery/";
+	std::string logDir = get_log_dir();
+	if (logDir.empty())
+		return;
+	std::string recoveryDir = logDir + "recovery/";
 
-	if (get_log_dir() == CACHE_LOGS_DIR) {
+	if (logDir == CACHE_LOGS_DIR) {
 		if (!PartitionManager.Mount_By_Path(CACHE_LOGS_DIR, false)) {
 			LOGINFO("Failed to mount %s for TWFunc::Update_Log_File\n", CACHE_LOGS_DIR);
 		}
@@ -586,7 +595,7 @@ void TWFunc::Update_Log_File(void) {
 	chmod(logCopy.c_str(), 0600);
 	chmod(lastLogCopy.c_str(), 0640);
 
-	if (get_log_dir() == CACHE_LOGS_DIR) {
+	if (logDir == CACHE_LOGS_DIR) {
 		if (PartitionManager.Mount_By_Path("/cache", false)) {
 			if (unlink("/cache/recovery/command") && errno != ENOENT) {
 				LOGINFO("Can't unlink %s\n", "/cache/recovery/command");
@@ -604,7 +613,8 @@ void TWFunc::Clear_Bootloader_Message() {
 }
 
 void TWFunc::Update_Intent_File(string Intent) {
-	if (PartitionManager.Mount_By_Path("/cache", false) && !Intent.empty()) {
+	TWPartition* cache = PartitionManager.Find_Partition_By_Path("/cache");
+	if (cache != NULL && !cache->Is_Read_Only() && PartitionManager.Mount_By_Path("/cache", false) && !Intent.empty()) {
 		TWFunc::write_to_file("/cache/recovery/intent", Intent);
 	}
 }
@@ -1183,7 +1193,8 @@ std::string TWFunc::to_string(unsigned long value) {
 }
 
 void TWFunc::Disable_Stock_Recovery_Replace(void) {
-	if (PartitionManager.Mount_By_Path(PartitionManager.Get_Android_Root_Path(), false)) {
+	TWPartition* sys = PartitionManager.Find_Partition_By_Path(PartitionManager.Get_Android_Root_Path());
+	if (sys != NULL && !sys->Is_Read_Only() && PartitionManager.Mount_By_Path(PartitionManager.Get_Android_Root_Path(), false)) {
 		// Disable flashing of stock recovery
 		if (TWFunc::Path_Exists("/system/recovery-from-boot.p")) {
 			rename("/system/recovery-from-boot.p", "/system/recovery-from-boot.bak");
@@ -1195,13 +1206,18 @@ void TWFunc::Disable_Stock_Recovery_Replace(void) {
 }
 
 unsigned long long TWFunc::IOCTL_Get_Block_Size(const char* block_device) {
+	unsigned long long block_device_bytes = 0;
 	unsigned long block_device_size;
 	int ret = 0;
 
-	int fd = open(block_device, O_RDONLY);
+	int fd = open(block_device, O_RDONLY | O_CLOEXEC);
 	if (fd < 0) {
 		LOGINFO("Find_Partition_Size: Failed to open '%s', (%s)\n", block_device, strerror(errno));
 	} else {
+		if (ioctl(fd, BLKGETSIZE64, &block_device_bytes) == 0 && block_device_bytes > 0) {
+			close(fd);
+			return block_device_bytes;
+		}
 		ret = ioctl(fd, BLKGETSIZE, &block_device_size);
 		close(fd);
 		if (ret) {
@@ -1255,17 +1271,16 @@ int TWFunc::stream_adb_backup(string &Restore_Name) {
 }
 
 std::string TWFunc::get_log_dir() {
-	if (PartitionManager.Find_Partition_By_Path(CACHE_LOGS_DIR) == NULL) {
-		if (PartitionManager.Find_Partition_By_Path(DATA_LOGS_DIR) == NULL) {
-			LOGINFO("Unable to find a directory to store TWRP logs.");
-			return "";
-		} else {
-			return DATA_LOGS_DIR;
-		}
-	}
-	else {
+	TWPartition* cache = PartitionManager.Find_Partition_By_Path(CACHE_LOGS_DIR);
+	if (cache != NULL && !cache->Is_Read_Only()) {
 		return CACHE_LOGS_DIR;
 	}
+	TWPartition* data = PartitionManager.Find_Partition_By_Path(DATA_LOGS_DIR);
+	if (data != NULL && !data->Is_Read_Only()) {
+		return DATA_LOGS_DIR;
+	}
+	LOGINFO("Unable to find a directory to store TWRP logs.\n");
+	return "";
 }
 
 void TWFunc::check_selinux_support() {
@@ -1294,12 +1309,14 @@ void TWFunc::check_selinux_support() {
 		if (cacheDir == CACHE_LOGS_DIR) {
 			PartitionManager.Mount_By_Path(CACHE_LOGS_DIR, false);
 		}
-		if (TWFunc::Path_Exists(se_context_check)) {
+		if (!cacheDir.empty() && TWFunc::Path_Exists(se_context_check)) {
 			ret = lgetfilecon(se_context_check.c_str(), &contexts);
 			if (ret < 0) {
 				LOGINFO("Could not check %s SELinux contexts, using /system/bin/teamwin instead which may be inaccurate.\n", se_context_check.c_str());
 				lgetfilecon("/system/bin/teamwin", &contexts);
 			}
+		} else {
+			ret = lgetfilecon("/system/bin/recovery", &contexts);
 		}
 		if (ret < 0) {
 			gui_warn("no_kernel_selinux=Kernel does not have support for reading SELinux contexts.");
@@ -1313,7 +1330,7 @@ void TWFunc::check_selinux_support() {
 bool TWFunc::Is_TWRP_App_In_System() {
 	LOGINFO("checking for twrp app\n");
 	TWPartition* sys = PartitionManager.Find_Partition_By_Path(PartitionManager.Get_Android_Root_Path());
-	if (!sys->Get_Super_Status()) {
+	if (sys != NULL && !sys->Is_Read_Only() && !sys->Get_Super_Status()) {
 		bool is_system_mounted = true;
 		if(!PartitionManager.Is_Mounted_By_Path(PartitionManager.Get_Android_Root_Path())) {
 			is_system_mounted = false;

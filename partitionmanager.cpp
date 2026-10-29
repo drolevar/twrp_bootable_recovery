@@ -408,6 +408,7 @@ clear:
 	KernelModuleLoader::Load_Vendor_Modules();
 #endif
 
+#if !defined(TW_SKIP_ADDITIONAL_FSTAB) || defined(TW_INCLUDE_CRYPTO)
 	TWPartition* ven = PartitionManager.Find_Partition_By_Path("/vendor");
 	TWPartition* odm = PartitionManager.Find_Partition_By_Path("/odm");
 	if (recovery_mode && !parse_userdata) {
@@ -439,6 +440,14 @@ clear:
 	if (odm) odm->UnMount(Display_Error);
 	Process_Keymaster_Version(ven, false);
 	if (ven) ven->UnMount(Display_Error);
+#else
+	if (recovery_mode && !parse_userdata) {
+		parse_userdata = true;
+		LOGINFO("Skipping Additional Fstab Processing\n");
+		property_set("fstab.additional", "0");
+	}
+	LOGINFO("Done processing fstab files\n");
+#endif
 	return true;
 }
 
@@ -502,7 +511,7 @@ void TWPartitionManager::Setup_Fstab_Partitions(bool Display_Error) {
 		if (!datamedia && !settings_partition && Find_Partition_By_Path("/sdcard") == NULL && Find_Partition_By_Path("/internal_sd") == NULL && Find_Partition_By_Path("/internal_sdcard") == NULL && Find_Partition_By_Path("/emmc") == NULL) {
 			// Attempt to automatically identify /data/media emulated storage devices
 			TWPartition* Dat = Find_Partition_By_Path("/data");
-			if (Dat) {
+			if (Dat && !Dat->Is_Read_Only()) {
 				LOGINFO("Using automatic handling for /data/media emulated storage device.\n");
 				datamedia = true;
 				Dat->Setup_Data_Media();
@@ -520,7 +529,7 @@ void TWPartitionManager::Setup_Fstab_Partitions(bool Display_Error) {
 				}
 			}
 			if (!settings_partition)
-				LOGERR("Unable to locate storage partition for storing settings file.\n");
+				LOGINFO("Unable to locate storage partition for storing settings file.\n");
 		}
 		if (!Write_Fstab()) {
 			if (Display_Error)
