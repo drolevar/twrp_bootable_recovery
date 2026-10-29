@@ -19,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <string.h>
+#include <unistd.h>
 
 #include <optional>
 #include <string>
@@ -50,17 +51,29 @@ std::string get_misc_blk_device(std::string* err) {
     return *g_misc_device_for_test;
   }
   Fstab fstab;
-  if (!ReadDefaultFstab(&fstab)) {
-    *err = "failed to read default fstab";
-    return "";
+  if (ReadDefaultFstab(&fstab)) {
+    for (const auto& entry : fstab) {
+      if (entry.mount_point == "/misc") {
+        return entry.blk_device;
+      }
+    }
   }
-  for (const auto& entry : fstab) {
-    if (entry.mount_point == "/misc") {
-      return entry.blk_device;
+  for (const char* candidate : {
+           "/dev/block/bootdevice/by-name/misc",
+           "/dev/block/by-name/misc",
+           "/dev/block/platform/ff3c0000.ufs/by-name/misc",
+       }) {
+    if (access(candidate, F_OK) == 0) {
+      if (err != nullptr) {
+        err->clear();
+      }
+      return candidate;
     }
   }
 
-  *err = "failed to find /misc partition";
+  if (err != nullptr) {
+    *err = "failed to find /misc partition";
+  }
   return "";
 }
 

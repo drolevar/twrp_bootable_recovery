@@ -395,7 +395,13 @@ int main(int argc, char **argv) {
 	symlink("/proc/mounts", "/etc/mtab");
 	std::string fstab_filename = "/etc/twrp.fstab";
 	if (!TWFunc::Path_Exists(fstab_filename)) {
-		fstab_filename = "/etc/recovery.fstab";
+		if ((TWFunc::Path_Exists("/dev/block/bootdevice/by-name/super") ||
+		     TWFunc::Path_Exists("/dev/block/by-name/super")) &&
+		    TWFunc::Path_Exists("/etc/recovery.fstab.super")) {
+			fstab_filename = "/etc/recovery.fstab.super";
+		} else {
+			fstab_filename = "/etc/recovery.fstab";
+		}
 	}
 	printf("=> Processing %s\n", fstab_filename.c_str());
 	if (!PartitionManager.Process_Fstab(fstab_filename, 1, !startup.Get_Fastboot_Mode())) {
